@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pose Detection - Pushups & Squats</title>
+  <style>
+    body {
+      margin: 0;
+      background: sky blue;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    #controls {
+      margin-bottom: 10px;
+    }
+    button {
+      padding: 10px 20px;
+      margin: 0 10px;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 8px;
+      border: none;
+    }
+    canvas {
+      position: relative;
+    }
+    video {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button onclick="setMode('pushup')">Start Pushup Counter</button>
+    <button onclick="setMode('squat')">Start Squat Counter</button>
+  </div>
+  <div>
+    <h2 id="status">Choose exercise to start</h2>
+  </div>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+
+  <!-- TensorFlow + Pose Detection -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
+
+    let detector;
+    let mode = null;  // "pushup" | "squat"
+    let counter = 0;
+    let goingDown = false;
+
+    const skeleton = [
+      
+      ["left_shoulder", "right_shoulder"],
+      ["left_shoulder", "left_elbow"], ["left_elbow", "left_wrist"],
+      ["right_shoulder", "right_elbow"], ["right_elbow", "right_wrist"],
+      ["left_hip", "right_hip"],
+      ["left_hip", "left_knee"], ["left_knee", "left_ankle"],
+      ["right_hip", "right_knee"], ["right_knee", "right_ankle"]
+    ];
+
+    async function init() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+
+      await new Promise(resolve => video.onloadedmetadata = resolve);
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+      );
+
+      detect();
+    }
+
+    function setMode(newMode) {
+      mode = newMode;
+      counter = 0;
+      goingDown = false;
+      statusEl.textContent = `Counting ${mode}s: 0`;
+    }
+
+    function angle(A, B, C) {
+      const AB = {x: B.x - A.x, y: B.y - A.y};
+      const CB = {x: B.x - C.x, y: B.y - C.y};
+      const dot = AB.x * CB.x + AB.y * CB.y;
+      const magAB = Math.sqrt(AB.x**2 + AB.y**2);
+      const magCB = Math.sqrt(CB.x**2 + CB.y**2);
+      return Math.acos(dot / (magAB * magCB)) * (180 / Math.PI);
+    }
+
+    function evaluateExercise(keypoints) {
+      if (!mode) return;
+
+      if (mode === "pushup") {
+        const leftElbow = keypoints.find(kp => kp.name === "left_elbow");
+        const leftShoulder = keypoints.find(kp => kp.name === "left_shoulder");
+        const leftWrist = keypoints.find(kp => kp.name === "left_wrist");
+
+        if (leftElbow.score > 0.4 && leftShoulder.score > 0.4 && leftWrist.score > 0.4) {
+          const elbowAngle = angle(leftShoulder, leftElbow, leftWrist);
+
+          if (elbowAngle < 70) {
+            goingDown = true;
+          }
+          if (elbowAngle > 160 && goingDown) {
+            counter++;
+            goingDown = false;
+            statusEl.textContent = `Pushups: ${counter}`;
+          }
+        }
+      }
+
+      if (mode === "squat") {
+        const leftHip = keypoints.find(kp => kp.name === "left_hip");
+        const leftKnee = keypoints.find(kp => kp.name === "left_knee");
+        const leftAnkle = keypoints.find(kp => kp.name === "left_ankle");
+
+        if (leftHip.score > 0.4 && leftKnee.score > 0.4 && leftAnkle.score > 0.4) {
+          const kneeAngle = angle(leftHip, leftKnee, leftAnkle);
+
+          if (kneeAngle < 90) {
+            goingDown = true;
+          }
+          if (kneeAngle > 160 && goingDown) {
+            counter++;
+            goingDown = false;
+            statusEl.textContent = `Squats: ${counter}`;
+          }
+        }
+      }
+    }
+
+    async function detect() {
+      const poses = await detector.estimatePoses(video);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      if (poses.length > 0) {
+        const keypoints = poses[0].keypoints;
+
+        // Draw dots
+        keypoints.forEach(kp => {
+          if (kp.score > 0.4) {
+            ctx.beginPath();
+            ctx.arc(kp.x, kp.y, 6, 0, 2 * Math.PI);
+            ctx.fillStyle = "white";
+            ctx.fill();
+          }
+        });
+
+        // Draw skeleton
+        skeleton.forEach(([a, b]) => {
+          const kp1 = keypoints.find(kp => kp.name === a);
+          const kp2 = keypoints.find(kp => kp.name === b);
+          if (kp1 && kp2 && kp1.score > 0.4 && kp2.score > 0.4) {
+            ctx.beginPath();
+            ctx.moveTo(kp1.x, kp1.y);
+            ctx.lineTo(kp2.x, kp2.y);
+            ctx.strokeStyle = "pink";
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          }
+        });
+
+        evaluateExercise(keypoints);
+      }
+
+      requestAnimationFrame(detect);
+    }
+
+    init();
+  </script>
+</body>
+</html>
